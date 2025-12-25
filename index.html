@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Smart Timetable Generator (Corrected)</title>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<style>
+body { font-family: Arial, sans-serif; padding: 20px; background: #f9fafb; }
+h2,h3,h4{color:#222;}
+table{border-collapse:collapse;width:100%;margin:25px 0;background:white;box-shadow:0 2px 6px rgba(0,0,0,0.1);}
+th,td{border:1px solid #333;padding:6px;text-align:center;font-size:14px;}
+thead{background:#e6e6e6;font-weight:bold;}
+button{padding:10px 16px;background:#007bff;color:white;border:none;border-radius:6px;margin-top:10px;cursor:pointer;}
+button:hover{background:#0056b3;}
+input, textarea {margin:3px;padding:6px;}
+#formContainer{background:#fff;padding:15px;border-radius:8px;margin-top:20px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}
+.fac-block { margin:6px 0; }
+.note { font-size:13px; color:#444; margin:6px 0; }
+</style>
+</head>
+<body>
+
+<h2>Smart Timetable Generator (Corrected)</h2>
+
+<div>
+  <h3>Basic Settings</h3>
+  <label>2nd Year Sections (1–5): </label><input id="sections2" type="number" value="2" min="1" max="5"><br>
+  <label>3rd Year Sections (1–5): </label><input id="sections3" type="number" value="2" min="1" max="5"><br>
+  <label>Class Advisor Names (comma separated): </label><input id="advisorNames" type="text" value="Dr.Smith,Dr.Jones,Dr.Brown"><br>
+</div>
+
+<div>
+  <h3>Subjects & Labs</h3>
+  <label>Number of Subjects 2nd Year: </label><input id="numSub2" type="number" value="7"><br>
+  <label>Number of Labs 2nd Year: </label><input id="numLab2" type="number" value="3"><br>
+  <label>Number of Subjects 3rd Year: </label><input id="numSub3" type="number" value="7"><br>
+  <label>Number of Labs 3rd Year: </label><input id="numLab3" type="number" value="3"><br>
+</div>
+
+<button onclick="generateForm()">Create Subject/Lab Forms</button>
+
+<div id="formContainer"></div>
+
+<!-- Area where faculty block inputs will be generated -->
+<div id="facultyBlocksContainer"></div>
+
+<div id="timetableContainer"></div>
+<button onclick="downloadAllTimetables()">Download All Timetables</button>
+
+<script>
+/* ---------- CONFIG ---------- */
+// Days and periods (ordered to match your requested format)
+const days = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
+
+// Period columns (note: includes break and lunch columns where scheduler will skip)
+const periods = [
+  '09:10 - 10:05 (1)',     // index 0 => period number 1
+  '10:05 - 11:00 (2)',     // index 1 => period 2
+  '11:00 - 11:15 (Break)', // index 2 => break
+  '11:15 - 12:10 (4)',     // index 3 => period 4 (user ordering)
+  '12:10 - 13:00 (3)',     // index 4 => period 3 (swapped in your spec)
+  '13:00 - 13:45 (Lunch)', // index 5 => lunch
+  '13:45 - 14:40 (5)',     // index 6 => lab possible start
+  '14:40 - 15:35 (6)',     // index 7
+  '15:35 - 16:30 (7)'      // index 8
+];
+
+// Lab placement: lab must occupy 3 continuous indices. We'll allow starting indices that fit 3 slots,
+// and **not** start at index 0 (first period). Also labs should be placed after lunch or in afternoon slots,
+// so we prefer start indices >=6-2 (i.e., start at 6 so it occupies 6,7,8). We'll attempt to place labs in
+// any valid 3-slot block except first period and excluding break/lunch.
+const LAB_BLOCK_LENGTH = 3;
+
+// Helper to map human period number (1..n) to index in periods array is not straightforward because break/lunch exist.
+// We'll refer to indices directly when checking blocks; faculty block inputs expect period numbers as column index (1-based), matching array index+1.
+
+/* ---------- FORM CREATION ---------- */
+function generateForm(){
+  const f = document.getElementById('formContainer');
+  f.innerHTML = '';
+  const numSub2 = parseInt(document.getElementById('numSub2').value);
+  const numLab2 = parseInt(document.getElementById('numLab2').value);
+  const numSub3 = parseInt(document.getElementById('numSub3').value);
+  const numLab3 = parseInt(document.getElementById('numLab3').value);
+
+  f.innerHTML += `<h4>2nd Year Subjects</h4>
+    <div class="note">For each subject enter: Name | Faculty names (comma per section) | Hours/week (theory periods)</div>`;
+  for(let i=0;i<numSub2;i++){
+    f.innerHTML += `Subject ${i+1}: <input id="sub2_name${i}" placeholder="Name">
+      Faculty (comma-separated for sections): <input id="sub2_fac${i}" placeholder="e.g. A.Sharma,B.Patel">
+      Hours/week: <input type="number" id="sub2_hr${i}" value="3" min="1" style="width:60px"><br>`;
+  }
+  f.innerHTML += `<h4>2nd Year Labs</h4><div class="note">Each lab will be scheduled as a 3-period continuous block once per week per section.</div>`;
+  for(let i=0;i<numLab2;i++){
+    f.innerHTML += `Lab ${i+1}: <input id="lab2_name${i}" placeholder="Name">
+      Faculty (comma-separated for sections): <input id="lab2_fac${i}" placeholder="e.g. M.John,A.Kumar"><br>`;
+  }
+
+  f.innerHTML += `<h4>3rd Year Subjects</h4>`;
+  for(let i=0;i<numSub3;i++){
+    f.innerHTML += `Subject ${i+1}: <input id="sub3_name${i}" placeholder="Name">
+      Faculty (comma-separated for sections): <input id="sub3_fac${i}" placeholder="e.g. P.Singh,L.Rao">
+      Hours/week: <input type="number" id="sub3_hr${i}" value="3" min="1" style="width:60px"><br>`;
+  }
+  f.innerHTML += `<h4>3rd Year Labs</h4>`;
+  for(let i=0;i<numLab3;i++){
+    f.innerHTML += `Lab ${i+1}: <input id="lab3_name${i}" placeholder="Name">
+      Faculty (comma-separated for sections): <input id="lab3_fac${i}" placeholder="e.g. D.Patel,R.Khan"><br>`;
+  }
+
+  f.innerHTML += `<div style="margin-top:8px;">
+    <button onclick="createFacultyBlockInputs()">Create Faculty Block Inputs</button>
+    <button onclick="collectAllAndGenerate()" style="margin-left:10px;">Generate Timetables</button>
+  </div>`;
+
+  // Clear previously created faculty blocks area
+  document.getElementById('facultyBlocksContainer').innerHTML = '';
+}
+
+/* ---------- FACULTY BLOCK INPUTS ---------- */
+/* After the user has created the subject/lab form, clicking this creates inputs for every unique faculty
+   found in the subject/lab fields so user can specify block times for each faculty. */
+function createFacultyBlockInputs(){
+  // collect unique faculty names from all subject/lab form fields (both years)
+  const facSet = new Set();
+
+  // helper to add faculty strings from an input id
+  function addFromId(idPrefix, count){
+    for(let i=0;i<count;i++){
+      const el = document.getElementById(idPrefix + i);
+      if(!el) continue;
+      const list = el.value.split(',').map(s=>s.trim()).filter(Boolean);
+      list.forEach(n => facSet.add(n));
+    }
+  }
+
+  const numSub2 = parseInt(document.getElementById('numSub2').value);
+  const numLab2 = parseInt(document.getElementById('numLab2').value);
+  const numSub3 = parseInt(document.getElementById('numSub3').value);
+  const numLab3 = parseInt(document.getElementById('numLab3').value);
+
+  addFromId('sub2_fac', numSub2);
+  addFromId('lab2_fac', numLab2);
+  addFromId('sub3_fac', numSub3);
+  addFromId('lab3_fac', numLab3);
+
+  const container = document.getElementById('facultyBlocksContainer');
+  container.innerHTML = '<h4>Faculty Block Inputs</h4><div class="note">Enter blocked slots per faculty (example format): <br><code>Mon:1,2;Tue:6;Fri:5</code><br>Periods are column numbers (1-based). Use day abbreviations Mon,Tue,Wed,Thu,Fri.</div>';
+
+  if(facSet.size === 0){
+    container.innerHTML += '<div class="note">No faculty names found in subject/lab fields yet. Add faculty names in the forms and click again.</div>';
+    return;
+  }
+
+  facSet.forEach((fac) => {
+    const id = 'facblock_' + fac.replace(/\s+/g,'_');
+    container.innerHTML += `<div class="fac-block"><strong>${fac}</strong> - Blocks: <input id="${id}" placeholder="Mon:1,2;Tue:6"></div>`;
+  });
+
+  // Button to apply blocks (optional visual)
+  container.innerHTML += `<div style="margin-top:8px;"><button onclick="applyFacultyBlocks()">Save Faculty Blocks</button></div>`;
+}
+
+// Save faculty blocks into a map for the scheduler to use
+let FACULTY_BLOCKS = {}; // { "Prof.Name": Set of "Day#index" strings }
+
+function applyFacultyBlocks(){
+  FACULTY_BLOCKS = {};
+  const container = document.getElementById('facultyBlocksContainer');
+  const inputs = container.querySelectorAll('input[id^="facblock_"]');
+  inputs.forEach(inp => {
+    const facname = inp.id.replace(/^facblock_/, '').replace(/_/g,' ');
+    const txt = inp.value.trim();
+    if(!txt) return;
+    // parse like: Mon:1,2;Tue:6 -> {Mon: [1,2], Tue: [6]}
+    const parts = txt.split(';').map(s=>s.trim()).filter(Boolean);
+    parts.forEach(p=>{
+      const [dayPart, nums] = p.split(':').map(s=>s.trim());
+      if(!dayPart || !nums) return;
+      const dayKey = dayPart.toLowerCase().slice(0,3); // mon,tue,...
+      const numList = nums.split(',').map(n=>parseInt(n.trim())).filter(n=>!isNaN(n));
+      numList.forEach(num=>{
+        // store as DayIndex string (e.g. Mon#2)
+        const key = dayKey.charAt(0).toUpperCase() + dayKey.slice(1); // Mon -> Mon (but we'll map later)
+        if(!FACULTY_BLOCKS[facname]) FACULTY_BLOCKS[facname] = new Set();
+        FACULTY_BLOCKS[facname].add(key + '#' + num); // we will match using day name + period number
+      });
+    });
+  });
+  alert('Faculty blocks saved. They will be respected when generating timetables.');
+}
+
+/* ---------- MAIN COLLECT & GENERATE ---------- */
+function collectAllAndGenerate(){
+  // parse all inputs into data structures
+  const s2 = parseInt(document.getElementById('sections2').value);
+  const s3 = parseInt(document.getElementById('sections3').value);
+  const numSub2 = parseInt(document.getElementById('numSub2').value);
+  const numLab2 = parseInt(document.getElementById('numLab2').value);
+  const numSub3 = parseInt(document.getElementById('numSub3').value);
+  const numLab3 = parseInt(document.getElementById('numLab3').value);
+  const advisors = document.getElementById('advisorNames').value.split(',').map(a=>a.trim()).filter(Boolean);
+
+  const subjects2 = [], labs2 = [], subjects3 = [], labs3 = [];
+
+  for(let i=0;i<numSub2;i++){
+    const name = (document.getElementById(`sub2_name${i}`) || {}).value || ('Sub2_' + (i+1));
+    const facs = ((document.getElementById(`sub2_fac${i}`) || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean);
+    const hours = parseInt((document.getElementById(`sub2_hr${i}`) || {}).value) || 3;
+    subjects2.push({ name, facultyList: facs, hours });
+  }
+  for(let i=0;i<numLab2;i++){
+    const name = (document.getElementById(`lab2_name${i}`) || {}).value || ('Lab2_' + (i+1));
+    const facs = ((document.getElementById(`lab2_fac${i}`) || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean);
+    labs2.push({ name, facultyList: facs });
+  }
+
+  for(let i=0;i<numSub3;i++){
+    const name = (document.getElementById(`sub3_name${i}`) || {}).value || ('Sub3_' + (i+1));
+    const facs = ((document.getElementById(`sub3_fac${i}`) || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean);
+    const hours = parseInt((document.getElementById(`sub3_hr${i}`) || {}).value) || 3;
+    subjects3.push({ name, facultyList: facs, hours });
+  }
+  for(let i=0;i<numLab3;i++){
+    const name = (document.getElementById(`lab3_name${i}`) || {}).value || ('Lab3_' + (i+1));
+    const facs = ((document.getElementById(`lab3_fac${i}`) || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean);
+    labs3.push({ name, facultyList: facs });
+  }
+
+  document.getElementById('timetableContainer').innerHTML = '';
+  // Generate for both years
+  generateTimetables('II', s2, subjects2, labs2, advisors);
+  generateTimetables('III', s3, subjects3, labs3, advisors);
+}
+
+/* ---------- SCHEDULER ---------- */
+/* Approach:
+   - For each section:
+     1) Create empty matrix for week: days x periods (null initially).
+     2) Reserve break/lunch slots and advisor Monday-1stPeriod.
+     3) Place labs: we require 3 different labs per section (equal to provided labs length ideally).
+        For each lab: try to find a valid 3-contiguous-slot block (not overlapping break/lunch/first period),
+        prefer afternoon blocks (start indices where all 3 indices are non-break/non-lunch). Enforce faculty availability.
+     4) Place theory subject periods according to hours/week, scanning remaining slots; avoid faculty clashes (global across sections),
+        respect FACULTY_BLOCKS and already assigned slots for that faculty.
+     5) Place exactly 1 Library and 1 Seminar in remaining free theory-capable slots.
+*/
+function generateTimetables(year, numSections, subjects, labs, advisors){
+  const container = document.getElementById('timetableContainer');
+
+  // Global map to avoid assigning same faculty to two different classes at same day+col
+  // key = facultyName, value = Set of "Day#col" (col is 1-based index for period column)
+  const globalFacultyAssignments = {};
+
+  // Helper to check if a column index corresponds to break or lunch or otherwise invalid
+  function isNonClassColumn(idx) {
+    const t = periods[idx];
+    return t.toLowerCase().includes('break') || t.toLowerCase().includes('lunch');
+  }
+
+  // convert day string to normalized short for FACULTY_BLOCKS matching (Mon,Tue,...)
+  function dayToKey(day) {
+    return day.slice(0,3); // Mon,Tue,Wed,Thu,Fri
+  }
+
+  // Check if a faculty is available for a given day and column (1-based col)
+  function isFacultyAvailable(fac, day, col) {
+    if(!fac) return true;
+    const blockSet = FACULTY_BLOCKS[fac];
+    if(blockSet) {
+      // stored keys like "Mon#2", but we saved facname without normalization earlier, so ensure match
+      const key = dayToKey(day).charAt(0).toUpperCase() + dayToKey(day).slice(1) + '#' + col;
+      if(blockSet.has(key)) return false;
+    }
+    const assigned = globalFacultyAssignments[fac];
+    if(assigned && assigned.has(day + '#' + col)) return false;
+    return true;
+  }
+
+  // Mark faculty as assigned
+  function assignFaculty(fac, day, col) {
+    if(!fac) return;
+    if(!globalFacultyAssignments[fac]) globalFacultyAssignments[fac] = new Set();
+    globalFacultyAssignments[fac].add(day + '#' + col);
+  }
+
+  // For each section produce a table
+  for(let sec = 0; sec < numSections; sec++){
+    const secName = String.fromCharCode(65 + sec);
+    // Initialize matrix: rows=days, cols=periods
+    const matrix = {};
+    days.forEach(d => {
+      matrix[d] = new Array(periods.length).fill(null);
+    });
+
+    // Reserve break and lunch with placeholder
+    days.forEach(d=>{
+      periods.forEach((p, idx) => {
+        if(isNonClassColumn(idx)) matrix[d][idx] = '—';
+      });
+    });
+
+    // Reserve Monday 1st period for advisor
+    days.forEach(d=>{
+      if(d === 'Monday') {
+        // first period index = 0 -> but ensure stored as advisor text
+        matrix[d][0] = 'Advisor: ' + (advisors[sec % Math.max(1, advisors.length)] || 'TBA');
+        // mark advisor faculty as busy as well? Advisor is not a faculty in subjects so we skip faculty marking.
+      }
+    });
+
+    // 1) Place labs for this section. Rule: each section must have exactly labs.length lab sessions (user expects 3).
+    // Each lab occupies LAB_BLOCK_LENGTH consecutive non-break/non-lunch slots and cannot include first period (index 0).
+    const placedLabs = []; // store {day, startIdx, labObj, fac}
+    const desiredLabs = Math.max(0, labs.length); // ideally user provided 3
+    // For fairness, rotate lab choices per section
+    for(let labIndex = 0; labIndex < desiredLabs; labIndex++){
+      const labObj = labs[labIndex % labs.length];
+      let placed = false;
+      // Candidate start indices are those where start..start+2 exist within periods and none are break/lunch and start != 0
+      const candidateStarts = [];
+      for(let s = 0; s <= periods.length - LAB_BLOCK_LENGTH; s++){
+        if(s === 0) continue; // cannot start at first period
+        let ok=true;
+        for(let k=0;k<LAB_BLOCK_LENGTH;k++){
+          if(isNonClassColumn(s+k)) { ok=false; break; }
+        }
+        if(ok) candidateStarts.push(s);
+      }
+      // Try days and candidate starts (shuffle order to reduce clustering)
+      const dayOrder = [...days];
+      // simple rotation for distribution
+      for(let dIndex=0; dIndex<dayOrder.length && !placed; dIndex++){
+        const day = dayOrder[(dIndex + sec) % dayOrder.length]; // vary by section
+        // if any lab already assigned on this day for this section, skip (user wanted 1.5 days total across labs; we ensure one lab block per lab/day)
+        // We allow at most 1 lab block per day per section (so 3 labs -> 3 days; user said 1.5 days lab session? but they want three labs weekly occupying 9 periods; sample typical uses 1.5 days maybe distributed across days — we'll place one lab block per lab, different days)
+        const dayHasLab = placedLabs.some(pl => pl.day === day);
+        if(dayHasLab) continue;
+        // iterate candidate starts
+        for(let si=0; si<candidateStarts.length && !placed; si++){
+          const start = candidateStarts[(si + sec) % candidateStarts.length];
+          // ensure those slots are free in matrix and faculty is available for all 3 columns
+          // choose faculty for this section for this lab: use labObj.facultyList[sec % len] if available, else first
+          const fac = (labObj.facultyList && labObj.facultyList.length>0) ? labObj.facultyList[sec % labObj.facultyList.length] : null;
+          let canPlace = true;
+          for(let k=0;k<LAB_BLOCK_LENGTH;k++){
+            const colIdx = start + k;
+            // if position already used (not null and not '—'), skip
+            if(matrix[day][colIdx] !== null) { canPlace = false; break; }
+            // check faculty availability (col number for user is colIdx+1)
+            if(fac && !isFacultyAvailable(fac, day, colIdx+1)) { canPlace = false; break; }
+          }
+          if(canPlace) {
+            // place lab block
+            for(let k=0;k<LAB_BLOCK_LENGTH;k++){
+              const colIdx = start + k;
+              matrix[day][colIdx] = labObj.name + ' (Lab)';
+              if(fac) assignFaculty(fac, day, colIdx+1);
+            }
+            placedLabs.push({day, start, labObj, fac});
+            placed = true;
+            break;
+          }
+        }
+      }
+      // if after all tries not placed, leave it and continue (later theory scheduling may shift) — but we attempted best effort
+    }
+// 2) FIXED: Schedule theory classes - MIX SUBJECTS ACROSS DAYS
+const subjectSlots = [];
+subjects.forEach(sub=>{
+  for(let h=0; h<Math.max(0, sub.hours || 0); h++){
+    subjectSlots.push({ name: sub.name, facultyList: sub.facultyList.slice() });
+  }
+});
+
+const shuffledSlots = [...subjectSlots].sort(() => Math.random() - 0.5);
+const rotatedSlots = [];
+days.forEach((day, dayIndex) => {
+  for(let i=0; i<5; i++) {
+    const slotIndex = (dayIndex * 5 + i) % shuffledSlots.length;
+    if(slotIndex < shuffledSlots.length) {
+      rotatedSlots.push(shuffledSlots[slotIndex]);
+    }
+  }
+});
+
+const availableSlots = [];
+for(const day of days){
+  for(let col=0; col<periods.length; col++){
+    if(isNonClassColumn(col) || matrix[day][col] !== null) continue;
+    availableSlots.push({day, col});
+  }
+}
+
+for(let i=0; i<Math.min(rotatedSlots.length, availableSlots.length); i++){
+  const slot = rotatedSlots[i];
+  const pos = availableSlots[i];
+  const fac = (slot.facultyList && slot.facultyList.length>0) ? 
+    slot.facultyList[sec % slot.facultyList.length] : null;
+  
+  if(isFacultyAvailable(fac, pos.day, pos.col+1)){
+    matrix[pos.day][pos.col] = slot.name;
+    if(fac) assignFaculty(fac, pos.day, pos.col+1);
+  }
+}
+
+    // 3) Exactly 1 Library and 1 Seminar per week per section: place them into remaining free theory-capable slots
+    // find all free slots (non-break, not advisor, not lab)
+    const freeSlots = [];
+    for(const day of days){
+      for(let col=0; col<periods.length; col++){
+        if(isNonClassColumn(col)) continue;
+        if(matrix[day][col] === null) freeSlots.push({day, col});
+      }
+    }
+    // place library first
+    if(freeSlots.length > 0) {
+      const lib = freeSlots.shift();
+      matrix[lib.day][lib.col] = 'Library';
+    }
+    // place seminar
+    if(freeSlots.length > 0) {
+      const sem = freeSlots.shift();
+      matrix[sem.day][sem.col] = 'Seminar';
+    }
+
+    // 4) Any remaining nulls mark as FREE
+    for(const day of days){
+      for(let col=0; col<periods.length; col++){
+        if(isNonClassColumn(col)) continue;
+        if(matrix[day][col] === null) matrix[day][col] = 'FREE';
+      }
+    }
+
+    // Build HTML table for this section
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    headerRow.innerHTML = `<th>${year} Year - Section ${secName}</th>`;
+    periods.forEach((p, idx) => headerRow.innerHTML += `<th>${p}</th>`);
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    days.forEach(day=>{
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${day}</td>`;
+      periods.forEach((p, idx)=>{
+        const val = matrix[day][idx];
+        row.innerHTML += `<td>${val === null ? 'FREE' : val}</td>`;
+      });
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
+  } // end sections loop
+}
+
+/* ---------- DOWNLOAD ---------- */
+function downloadAllTimetables(){
+  const tables = document.querySelectorAll('#timetableContainer table');
+  if(!tables || tables.length === 0) { 
+    alert('No timetables to download. Generate first.'); 
+    return; 
+  }
+
+  tables.forEach((table, index) => {
+    html2canvas(table, {
+      scale: 3,            // <-- HIGHER DPI = CRYSTAL CLEAR IMAGE
+      useCORS: true,
+      backgroundColor: "#ffffff"
+    }).then(canvas => {
+      const link = document.createElement('a');
+      link.download = `Timetable_${index+1}.png`;
+      link.href = canvas.toDataURL("image/png", 1.0); // 100% quality
+      link.click();
+    });
+  });
+}
+</script>
+</body>
+</html>
